@@ -2,7 +2,7 @@
   "name": "manage-r-backend",
   "version": "1.0.0",
   "description": "Manage-R — Resume management and career tracking platform API",
-  "author": "Manage-R Team",
+  "author": "Tasin Shahriar Chowdhury",
   "license": "MIT",
   "private": true,
   "engines": {
