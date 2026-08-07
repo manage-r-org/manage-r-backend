@@ -19,7 +19,10 @@ import { AppConfigService } from './app-config.service';
       validationSchema: envValidationSchema,
       validationOptions: {
         abortEarly: false, // report all validation errors, not just the first
-        allowUnknown: false,
+        // Nest validates the complete process environment, which also contains
+        // operating system, shell, editor, and npm variables outside this schema.
+        // Known application variables remain validated by envValidationSchema.
+        allowUnknown: true,
       },
     }),
   ],

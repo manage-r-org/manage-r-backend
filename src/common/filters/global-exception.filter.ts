@@ -1,6 +1,8 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { PinoLogger } from 'nestjs-pino';
+import { AppConfigService } from '../../config/app-config.service';
+import { getRequestId } from '../utils/http-log.util';
 
 interface ErrorResponse {
   success: boolean;
@@ -25,7 +27,10 @@ interface ErrorResponse {
  */
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
-  constructor(private readonly logger: PinoLogger) {
+  constructor(
+    private readonly logger: PinoLogger,
+    private readonly config: AppConfigService,
+  ) {
     this.logger.setContext(GlobalExceptionFilter.name);
   }
 
@@ -52,8 +57,6 @@ export class GlobalExceptionFilter implements ExceptionFilter {
             : (responseObj['message'] as string)) ?? message;
         errorCode = responseObj['errorCode'] as string | undefined;
       }
-    } else if (exception instanceof Error) {
-      message = exception.message;
     }
 
     const errorResponse: ErrorResponse = {
@@ -65,10 +68,22 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       ...(errorCode && { errorCode }),
     };
 
+    const logDetails = {
+      requestId: getRequestId(request),
+      method: request.method,
+      path: request.path,
+      statusCode,
+      exception: exception instanceof Error ? exception.name : 'UnknownException',
+      message,
+      ...(errorCode && { errorCode }),
+      ...(request.user && { userId: (request.user as { id?: string }).id }),
+      ...(this.config.isDevelopment && exception instanceof Error && { err: exception }),
+    };
+
     if (statusCode >= HttpStatus.INTERNAL_SERVER_ERROR) {
-      this.logger.error({ err: exception, ...errorResponse }, 'Unhandled exception');
+      this.logger.error(logDetails, 'Unhandled exception');
     } else {
-      this.logger.warn(errorResponse, 'HTTP exception');
+      this.logger.warn(logDetails, 'HTTP exception');
     }
 
     response.status(statusCode).json(errorResponse);

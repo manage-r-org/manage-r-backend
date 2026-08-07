@@ -1,4 +1,4 @@
-import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
 import { AppConfigModule } from './config/app-config.module';
@@ -8,9 +8,17 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import { TransformResponseInterceptor } from './common/interceptors/transform-response.interceptor';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
-import { LoggerMiddleware } from './common/middleware/logger.middleware';
+import {
+  createRequestId,
+  formatHttpLogMessage,
+  getHttpLogDetails,
+  getHttpLogLevel,
+  getRequestElapsedTime,
+  isNoisyRoute,
+} from './common/utils/http-log.util';
 
 // Feature Modules
+import { RootModule } from './modules/root/root.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -36,15 +44,60 @@ import { JobApplicationModule } from './modules/job-application/job-application.
         pinoHttp: {
           level: config.isDevelopment ? 'debug' : 'info',
           transport: config.isDevelopment
-            ? { target: 'pino-pretty', options: { colorize: true, singleLine: true } }
+            ? {
+                target: 'pino-pretty',
+                options: {
+                  colorize: true,
+                  singleLine: true,
+                  messageFormat: '{msg}',
+                  ignore:
+                    'pid,hostname,requestId,method,path,statusCode,responseTime,ip,userId,event,context',
+                },
+              }
             : undefined,
-          redact: ['req.headers.authorization', 'req.headers.cookie'],
-          customProps: () => ({ context: 'HTTP' }),
+          redact: {
+            paths: [
+              'req.headers.authorization',
+              'req.headers.cookie',
+              'req.headers.x-api-key',
+              'req.body.password',
+              'req.body.refreshToken',
+              'req.body.accessToken',
+              'req.body.token',
+            ],
+            censor: '[REDACTED]',
+          },
+          autoLogging: {
+            ignore: isNoisyRoute,
+          },
+          quietReqLogger: true,
+          quietResLogger: true,
+          customAttributeKeys: {
+            reqId: 'requestId',
+          },
+          genReqId: createRequestId,
+          customLogLevel: getHttpLogLevel,
+          customSuccessObject: (request, response, { responseTime }: { responseTime: number }) =>
+            getHttpLogDetails(request, response, responseTime),
+          customSuccessMessage: formatHttpLogMessage,
+          customErrorObject: (
+            request,
+            response,
+            error,
+            { responseTime }: { responseTime: number },
+          ) => ({
+            ...getHttpLogDetails(request, response, responseTime),
+            exception: error.name,
+            ...(config.isDevelopment && { err: error }),
+          }),
+          customErrorMessage: (request, response) =>
+            formatHttpLogMessage(request, response, getRequestElapsedTime(request)),
         },
       }),
     }),
 
     // ── Feature Modules ───────────────────────────────────────────────────────
+    RootModule,
     HealthModule,
     AuthModule,
     UsersModule,
@@ -80,8 +133,4 @@ import { JobApplicationModule } from './modules/job-application/job-application.
     },
   ],
 })
-export class AppModule implements NestModule {
-  configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(LoggerMiddleware).forRoutes({ path: '*', method: RequestMethod.ALL });
-  }
-}
+export class AppModule {}

@@ -1,7 +1,7 @@
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { Logger } from 'nestjs-pino';
+import { PinoLogger } from 'nestjs-pino';
 import * as compression from 'compression';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
@@ -9,12 +9,10 @@ import { AppConfigService } from './config/app-config.service';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, {
-    // Defer logger until pino is ready
-    bufferLogs: true,
+    // Application logs are emitted through nestjs-pino. Suppress Nest's verbose
+    // route-registration output so startup remains concise.
+    logger: false,
   });
-
-  // ── Pino Logger ─────────────────────────────────────────────────────────────
-  app.useLogger(app.get(Logger));
 
   const config = app.get(AppConfigService);
 
@@ -34,7 +32,8 @@ async function bootstrap(): Promise<void> {
     origin: config.corsOrigins,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'X-Request-Id'],
+    exposedHeaders: ['X-Request-Id'],
   });
 
   // ── Global Prefix & URI Versioning ──────────────────────────────────────────
@@ -93,14 +92,46 @@ async function bootstrap(): Promise<void> {
   // ── Start ────────────────────────────────────────────────────────────────────
   await app.listen(config.port);
 
-  const logger = app.get(Logger);
-  logger.log(
-    `🚀 Manage-R API running on: http://localhost:${config.port}/${config.apiPrefix}/v${config.apiVersion}`,
+  const logger = await app.resolve(PinoLogger);
+  logger.setContext('Bootstrap');
+  logger.info(
+    {
+      event: 'application_started',
+      environment: config.nodeEnv,
+      port: config.port,
+      apiUrl: `http://localhost:${config.port}/${config.apiPrefix}/v${config.apiVersion}`,
+      swaggerUrl: config.swaggerEnabled
+        ? `http://localhost:${config.port}/${config.apiPrefix}/docs`
+        : undefined,
+      database: 'connected',
+      nodeVersion: process.version,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    },
+    buildStartupSummary(config),
   );
+}
 
-  if (config.swaggerEnabled) {
-    logger.log(`📚 Swagger docs: http://localhost:${config.port}/${config.apiPrefix}/docs`);
-  }
+function buildStartupSummary(config: AppConfigService): string {
+  const apiUrl = `http://localhost:${config.port}/${config.apiPrefix}/v${config.apiVersion}`;
+  const swaggerUrl = config.swaggerEnabled
+    ? `http://localhost:${config.port}/${config.apiPrefix}/docs`
+    : 'disabled';
+
+  return [
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '🚀 Manage-R API Started',
+    '',
+    `Environment : ${config.nodeEnv}`,
+    `Port        : ${config.port}`,
+    `API         : ${apiUrl}`,
+    `Swagger     : ${swaggerUrl}`,
+    'Database    : Connected',
+    `Node        : ${process.version}`,
+    `PID         : ${process.pid}`,
+    `Started At  : ${new Date().toISOString()}`,
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+  ].join('\n');
 }
 
 bootstrap().catch((error: unknown) => {
