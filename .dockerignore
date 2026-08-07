@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.github
+.husky
+coverage
+*.log
+.env
+.env.*
+!.env.example
+README.md
+docker-compose*.yml
+*.tsbuildinfo
