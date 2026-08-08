@@ -47,6 +47,17 @@ POST /api/v1/auth/logout
 - Unit tests: `auth.service.spec.ts` logout block (46 total pass).
 - Verified end-to-end: valid token 200 with `data: null`, repeated 200, body-injected `userId`/`role` ignored (identity from token), missing/garbage/wrong-secret tokens 401, `user_logged_out` logged, zero token/password/body-id strings in logs.
 
+## Phase 5 — Current user (complete)
+
+GET /api/v1/auth/me
+- Protected by the global `JwtAuthGuard` (no `@Public()`); identity comes from `@CurrentUser()` → verified access token. The endpoint accepts **no** userId/email/username — query, body, and `X-User-Id` header are all ignored, so a client can only ever see its own account.
+- `AuthController.me` — thin; delegates identity resolution + mapping to `AuthService.getMe`.
+- `AuthService.getMe` — `findByIdWithRole(sub)` (current DB truth, incl. `sec_role`) -> 404 `USER_NOT_FOUND` if the account no longer exists -> 403 `ACCOUNT_DISABLED` if inactive (same policy as login/refresh) -> `toMeResponse`.
+- `MeResponse` + `toMeResponse` in `auth.mapper.ts` — `{ userId (BIGINT as string), username, email, phoneNumber, role }`; role re-derived from the DB, not trusted from the JWT; password hash, tokens, `is_active`, `role_id` never exposed.
+- `findByIdWithRole` already existed (added in Phase 3 for refresh) — no repository change.
+- Unit tests: `auth.service.spec.ts` getMe block (6 new tests, 52 total pass).
+- Verified end-to-end: valid token 200 with safe payload, spoofing (query/body/header userId) ignored, missing/garbage/refresh-as-access tokens 401, nonexistent user 404, disabled account 403, no sensitive fields in the response.
+
 ## Deferred / next steps
 
 - Refresh token rotation + persistence (stateless by design — no refresh-token table yet); server-side logout revocation; token revocation on logout.
