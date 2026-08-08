@@ -9,6 +9,7 @@ import { RegisterDto } from './dto/register.dto';
 import {
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   UnauthorizedException,
 } from '../../common/exceptions';
 import { AppConfigService } from '../../config/app-config.service';
@@ -483,6 +484,77 @@ describe('AuthService', () => {
       expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('eyJhbGciOiJIUzI1NiIs'));
       expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('signed-access-token'));
       expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('valid-refresh-token'));
+    });
+  });
+
+  describe('getMe', () => {
+    const authenticatedUser: IAuthenticatedUser = {
+      id: '1',
+      email: 'tasin@example.com',
+      roles: [Role.USER],
+    };
+
+    it('returns the safe account info for the authenticated user', async () => {
+      repository.findByIdWithRole.mockResolvedValue(mockUserWithRole);
+
+      const result = await service.getMe(authenticatedUser);
+
+      expect(result).toEqual({
+        userId: '1',
+        username: 'tasin',
+        email: 'tasin@example.com',
+        phoneNumber: '017XXXXXXXX',
+        role: 'USER',
+      });
+    });
+
+    it('looks up the account by the authenticated user id only', async () => {
+      repository.findByIdWithRole.mockResolvedValue(mockUserWithRole);
+
+      await service.getMe(authenticatedUser);
+
+      expect(repository.findByIdWithRole).toHaveBeenCalledWith('1');
+    });
+
+    it('returns the current role from the database, not from client input', async () => {
+      repository.findByIdWithRole.mockResolvedValue({
+        ...mockUserWithRole,
+        sec_role: { role_name: 'ADMIN' },
+      });
+
+      const result = await service.getMe(authenticatedUser);
+
+      expect(result.role).toBe('ADMIN');
+    });
+
+    it('never exposes the password hash or any token', async () => {
+      repository.findByIdWithRole.mockResolvedValue(mockUserWithRole);
+
+      const result = await service.getMe(authenticatedUser);
+
+      expect(result).not.toHaveProperty('password');
+      expect(result).not.toHaveProperty('passwordHash');
+      expect(result).not.toHaveProperty('password_hash');
+      expect(result).not.toHaveProperty('accessToken');
+      expect(result).not.toHaveProperty('refreshToken');
+      expect(result).not.toHaveProperty('tokenType');
+      expect(result).not.toHaveProperty('isActive');
+      expect(result).not.toHaveProperty('roleId');
+    });
+
+    it('throws NotFoundException when the account no longer exists', async () => {
+      repository.findByIdWithRole.mockResolvedValue(null);
+
+      await expect(service.getMe(authenticatedUser)).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('rejects a disabled account like login and refresh', async () => {
+      repository.findByIdWithRole.mockResolvedValue({
+        ...mockUserWithRole,
+        is_active: false,
+      });
+
+      await expect(service.getMe(authenticatedUser)).rejects.toBeInstanceOf(ForbiddenException);
     });
   });
 });

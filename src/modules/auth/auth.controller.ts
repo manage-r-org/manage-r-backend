@@ -1,4 +1,4 @@
-import { Body, Controller, HttpStatus, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpStatus, Post } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -7,6 +7,7 @@ import { RegisterDto } from './dto/register.dto';
 import {
   LoginResponse,
   LogoutResponse,
+  MeResponse,
   RefreshResponse,
   RegisteredUserResponse,
 } from './mappers/auth.mapper';
@@ -76,5 +77,20 @@ export class AuthController {
   @ApiStandardResponse(HttpStatus.OK, 'Logout successful')
   logout(@CurrentUser() user: IAuthenticatedUser): LogoutResponse {
     return this.authService.logout(user);
+  }
+
+  /**
+   * GET /api/v1/auth/me
+   *
+   * Protected endpoint. The global JwtAuthGuard verifies the access token and
+   * @CurrentUser() supplies the identity. No userId/email/username is accepted
+   * from the request, so a client can only ever see its own account. Thin:
+   * identity resolution and the safe mapping live in AuthService.
+   */
+  @Get('me')
+  @ApiOperation({ summary: 'Get the currently authenticated user' })
+  @ApiStandardResponse(HttpStatus.OK, 'Current user retrieved successfully')
+  me(@CurrentUser() user: IAuthenticatedUser): Promise<MeResponse> {
+    return this.authService.getMe(user);
   }
 }

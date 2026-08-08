@@ -9,13 +9,16 @@ import { RegisterDto } from './dto/register.dto';
 import {
   LoginResponse,
   LogoutResponse,
+  MeResponse,
   RefreshResponse,
   RegisteredUserResponse,
+  toMeResponse,
   toRegisteredUserResponse,
 } from './mappers/auth.mapper';
 import {
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   UnauthorizedException,
 } from '../../common/exceptions';
 import { ERROR_MESSAGES } from '../../common/constants';
@@ -63,6 +66,11 @@ interface AuthTokenPayload {
  *   Identity comes from the verified access token (@CurrentUser()). Because
  *   refresh tokens are stateless, nothing is revoked server-side — the client
  *   discards its tokens and the endpoint logs the event and returns success.
+ *
+ * Current-user flow:
+ *   1. Load the account by the authenticated user's id (from the JWT).
+ *   2. Reject unknown or disabled accounts.
+ *   3. Map the account (with its current role) into a safe response.
  */
 @Injectable()
 export class AuthService {
@@ -175,6 +183,29 @@ export class AuthService {
     this.logger.info({ event: 'user_logged_out', userId: user.id }, 'User logged out');
 
     return { message: 'Logout successful.', data: null };
+  }
+
+  /**
+   * Current-user flow:
+   *   1. The identity comes from the verified access token (JwtAuthGuard +
+   *      @CurrentUser()); the client never supplies a userId.
+   *   2. Load the account by that id and reject accounts that no longer exist
+   *      (404) or have been disabled (403, same as login/refresh).
+   *   3. Return a safe account response including the current role from the
+   *      database.
+   */
+  async getMe(user: IAuthenticatedUser): Promise<MeResponse> {
+    const account = await this.authRepository.findByIdWithRole(user.id);
+
+    if (!account) {
+      throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
+    }
+
+    if (!account.is_active) {
+      throw new ForbiddenException(ERROR_MESSAGES.ACCOUNT_DISABLED);
+    }
+
+    return toMeResponse(account);
   }
 
   /**

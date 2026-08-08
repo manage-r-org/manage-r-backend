@@ -1,4 +1,5 @@
-import { sec_user } from '@prisma/client';
+import type { sec_user } from '@prisma/client';
+import type { UserWithRole } from '../auth.repository';
 
 /**
  * API-safe shape of a newly registered user.
@@ -51,6 +52,35 @@ export interface RefreshResponse {
 export interface LogoutResponse {
   message: string;
   data: null;
+}
+
+/**
+ * API-safe shape returned by GET /auth/me.
+ *
+ * Identity of the currently authenticated account. The role is read from the
+ * database (current truth), not from the JWT. The password hash, token values,
+ * and all internal security fields are never exposed.
+ */
+export interface MeResponse {
+  userId: string;
+  username: string;
+  email: string;
+  phoneNumber: string | null;
+  role: string;
+}
+
+/**
+ * Maps a persisted `sec_user` (with its role relation) into the API-safe
+ * `/auth/me` response.
+ */
+export function toMeResponse(account: UserWithRole): MeResponse {
+  return {
+    userId: account.user_id.toString(),
+    username: account.username,
+    email: account.email,
+    phoneNumber: account.phone_number,
+    role: account.sec_role.role_name,
+  };
 }
 
 /**
