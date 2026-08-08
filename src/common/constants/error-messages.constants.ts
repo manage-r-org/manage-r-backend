@@ -9,7 +9,8 @@ export const ERROR_MESSAGES = {
   BAD_REQUEST: 'Bad request.',
 
   // Auth
-  INVALID_CREDENTIALS: 'Invalid email or password.',
+  INVALID_CREDENTIALS: 'Invalid credentials.',
+  INVALID_REFRESH_TOKEN: 'Invalid or expired refresh token.',
   TOKEN_EXPIRED: 'Token has expired.',
   TOKEN_INVALID: 'Token is invalid.',
   ACCOUNT_DISABLED: 'Your account has been disabled.',

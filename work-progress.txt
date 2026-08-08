@@ -1,0 +1,55 @@
+# Manage-R Backend — Work Progress
+
+Tracked, non-committed work in the `manage-r-backend` repo.
+
+## Phase 1 — Register (complete)
+
+POST /api/v1/auth/register
+- `RegisterDto` with class-validator rules (username, email, strong password, optional phone).
+- `AuthService.register` (duplicate checks -> 409, bcrypt hashing -> repo, P2002 -> ConflictException).
+- `AuthRepository.createUserWithProfile` — atomic `sec_user` + profile create, default `USER` role via `connectOrCreate`.
+- Sanitized `RegisteredUserResponse` mapper (BIGINT id as string, no password/hash).
+- Unit tests: `auth.service.spec.ts`, `register.dto.spec.ts`.
+- Verified end-to-end via curl (201, 409, 400, role-injection whitelist).
+
+## Phase 2 — Login (complete)
+
+POST /api/v1/auth/login
+- `LoginDto` — single `identifier` (username OR email) + strong password.
+- `AuthRepository.findByLoginIdentifier` — `findFirst` OR lookup, includes `sec_role`.
+- `AuthService.login` — find -> `comparePassword` (bcrypt) -> inactive check -> sign access + refresh JWTs.
+- Generic `Invalid credentials.` (401) for both unknown identifier and wrong password (no account enumeration); 403 for disabled accounts.
+- Tokens signed with the project's existing claims contract `{ sub, email, roles }`; access token uses module default (access secret/15m), refresh token uses `JWT_REFRESH_SECRET`/`JWT_REFRESH_EXPIRATION` (7d).
+- `LoginResponse` mapper — accessToken, refreshToken, tokenType, expiresIn (from decoded `exp`).
+- `INVALID_CREDENTIALS` message generalized from "Invalid email or password." to "Invalid credentials.".
+- Unit tests: `auth.service.spec.ts` (login block), `login.dto.spec.ts` (26 tests total pass).
+- Verified end-to-end: email login 200, username login 200, wrong password 401, unknown identifier 401 (identical body), disabled account 403, weak/missing payload 400, role injection 400. Tokens cross-verified: access only verifies with access secret, refresh only with refresh secret; claims contain no password/hash.
+
+## Phase 3 — Refresh (complete)
+
+POST /api/v1/auth/refresh
+- `RefreshTokenDto` — single `refreshToken` field, missing/empty -> 400.
+- `AuthController.refresh` — `@Public()` (no access-token guard), route stays inside the auth module.
+- `AuthService.refresh` — `verifyRefreshToken` (jwtService.verifyAsync, `JWT_REFRESH_SECRET`) -> `findByIdWithRole(sub)` -> inactive check (403) -> `signAccessToken(buildAuthTokenPayload)` (same call login uses).
+- Generic `Invalid or expired refresh token.` (401) for expired, malformed, wrong-secret, access-token, deleted-user; reason logged only (`refresh_token_rejected` + error name).
+- Stateless: no refresh-token persistence, no rotation; the client reuses the same refresh token until expiry (7d).
+- `RefreshResponse` mapper — accessToken, tokenType, expiresIn (900); no refreshToken echoed, no password/hash.
+- Unit tests: `refresh-token.dto.spec.ts`, `auth.service.spec.ts` refresh block (42 total pass).
+- Verified end-to-end: valid refresh 200 (no auth header) with fresh access token verified against access secret (claims {sub,email,roles}, 15m), access-token-as-refresh 401, tampered 401, malformed 401, expired 401, nonexistent user 401, disabled account 403, missing/empty 400, privileged-field injection 400. No token/password strings in logs.
+
+## Phase 4 — Logout (complete)
+
+POST /api/v1/auth/logout
+- Protected by the global `JwtAuthGuard` (no `@Public()`); identity comes from `@CurrentUser()` → verified access token, never from the body (no DTO, no body).
+- `AuthService.logout` — logs `user_logged_out` event with `userId` and returns `{ message: 'Logout successful.', data: null }` (interceptor → `{ success, message, data: null }`). Synchronous, idempotent.
+- `LogoutResponse` type added to `auth.mapper.ts`. No repository change.
+- Architecture determination: refresh tokens are **stateless** (A) — never persisted, not rotated, no session record. Logout therefore cannot revoke server-side; it is client-side token disposal. Documented limitation: already-issued access/refresh tokens remain valid until natural expiry, and `/auth/refresh` still accepts a pre-logout refresh token. No sessions/blacklist/Redis was invented.
+- Unit tests: `auth.service.spec.ts` logout block (46 total pass).
+- Verified end-to-end: valid token 200 with `data: null`, repeated 200, body-injected `userId`/`role` ignored (identity from token), missing/garbage/wrong-secret tokens 401, `user_logged_out` logged, zero token/password/body-id strings in logs.
+
+## Deferred / next steps
+
+- Refresh token rotation + persistence (stateless by design — no refresh-token table yet); server-side logout revocation; token revocation on logout.
+- `login_log` audit table is defined in the schema but not yet written to.
+- Auth endpoints should eventually be covered by e2e tests alongside registration.
+- `rate limit` login attempts (brute-force protection).
