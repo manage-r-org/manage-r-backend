@@ -58,6 +58,53 @@ GET /api/v1/auth/me
 - Unit tests: `auth.service.spec.ts` getMe block (6 new tests, 52 total pass).
 - Verified end-to-end: valid token 200 with safe payload, spoofing (query/body/header userId) ignored, missing/garbage/refresh-as-access tokens 401, nonexistent user 404, disabled account 403, no sensitive fields in the response.
 
+## Phase 6 — Get profile (complete)
+
+GET /api/v1/profile
+- Protected by the global `JwtAuthGuard` (no `@Public()`); identity comes from `@CurrentUser()` → verified access token. The endpoint accepts **no** userId/profileId/email/username — query, body, and `X-User-Id` header are all ignored, so a client can only ever read its own profile (no IDOR).
+- `ProfilesController.getProfile` — thin; delegates to `ProfilesService.getProfile`. Route path changed from the placeholder `@Controller('profiles')` to `@Controller('profile')` to match the documented `/api/v1/profile` contract (class name `ProfilesController` kept).
+- `ProfilesService.getProfile` — `findByUserId(user.id)` -> 404 `NOT_FOUND('Profile')` -> `toProfileResponse`. A read never creates a profile (that is POST /profile's job).
+- `ProfilesRepository.findByUserId` — `findUnique({ where: { user_id: BigInt(id) } })`; `user_id` is `@unique` in the schema (one profile per account), so no schema change.
+- `ProfileResponse` + `toProfileResponse` in `profiles/mappers/profile.mapper.ts` — whitelist of the profile's own fields; `profileId`/`userId` as strings (BIGINT); no sec_user internals.
+- Unit tests: `profiles.service.spec.ts` (4 new tests, 56 total pass).
+- Verified end-to-end: valid token 200 with safe payload, spoofing (query/body/header) ignored, missing/garbage/refresh-as-access tokens 401, valid account without a profile row 404 (still 200 on /auth/me).
+
+## Phase 7 — Create profile (complete)
+
+POST /api/v1/profile
+- Protected by the global `JwtAuthGuard` (no `@Public()`); ownership comes from `@CurrentUser()` → verified access token, never from the body. The DTO has no `userId`/`profileId`, and the global `ValidationPipe` (whitelist + forbidNonWhitelisted) rejects them with 400 `property userId should not exist`.
+- `ProfilesController.createProfile` — thin; passes `@CurrentUser()` + validated `CreateProfileDto` to the service. `@ApiStandardResponse(HttpStatus.CREATED, ...)`.
+- `CreateProfileDto` (`profiles/dto/create-profile.dto.ts`) — all 13 profile fields optional (schema allows null everywhere), class-validator rules matching DB column lengths (`@IsString`, `@MaxLength`, `@IsEmail`, `@IsDateString`), `ApiPropertyOptional` docs.
+- `ProfilesService.createProfile` — 409 `ALREADY_EXISTS('Profile')` if `findByUserId` already finds one (CREATE, never overwrites), then `createProfile(user.id, dto)`, then P2002 unique-constraint catch → same 409 (race-condition safety net, like `AuthService.register`). Logs `profile_created`. Logger added to `ProfilesService` (was absent for the pure-read GET).
+- `ProfilesRepository.createProfile` — maps DTO → snake_case Prisma data; `user_id: BigInt(userId)` from the JWT identity only; `dob` converted string→`Date` (Prisma's DateTime parser rejects a bare `"1995-01-01"`).
+- Response uses the existing `ProfileResponse` + `toProfileResponse` (no new mapper).
+- Unit tests: `profiles.service.spec.ts` createProfile block (6 new tests, 62 total pass).
+- Verified end-to-end: 201 with full body (dob round-trips to `1995-01-01`), DB row `user_id` = authenticated user (ownership), duplicate 409, missing/garbage tokens 401, `userId` injection 400, invalid email 400, invalid dob 400, GET after POST 200, zero 500s.
+
+## Phase 8 — Update profile (complete)
+
+PATCH /api/v1/profile
+- Protected by the global `JwtAuthGuard` (no `@Public()`); ownership is inherent — the profile updated is always the authenticated user's own (`@CurrentUser()` → `user.id`), and the DTO has no `userId`/`profileId`, so the ValidationPipe (whitelist + forbidNonWhitelisted) rejects any attempt to target another row (400 `property userId should not exist`).
+- `ProfilesController.updateProfile` — thin; `@Patch()` on the `profile` route. `@ApiStandardResponse(HttpStatus.OK, SUCCESS_MESSAGES.UPDATED('Profile'))`.
+- `UpdateProfileDto` (`profiles/dto/update-profile.dto.ts`) — `extends CreateProfileDto`, so the same 13 optional fields/rules apply; PATCH semantics: only the supplied fields change.
+- `ProfilesService.updateProfile` — `isDtoEmpty` (all values `undefined`) → 400 `NOTHING_TO_UPDATE` (a body of `{}` is rejected before any DB call); `findByUserId` → 404 `NOT_FOUND('Profile')` if the account has no profile (PATCH never creates one); `updateByUserId`; P2025 catch → 404 (race safety net). Logs `profile_updated`. Note: an explicit `null` is treated as clear-the-field intent (not an empty body) — supported because the schema columns are nullable.
+- `ProfilesRepository.updateByUserId` — `update({ where: { user_id: BigInt(userId) }, data: {...} })`; same DTO→snake_case mapping as create, including the `dob` string→`Date` conversion; a field left `undefined` is ignored by Prisma (never overwritten).
+- Schema fix (data integrity): added `@updatedAt` to `profile.updated_at` in `prisma/schema.prisma` — Prisma now sets it on create and update (previously stayed `null` forever, yet was exposed as `updatedAt` in responses). Applied via `prisma db push` (repo uses db push, no migrations dir; `prisma migrate dev` was NOT used — it would have demanded a destructive reset).
+- Unit tests: `profiles.service.spec.ts` updateProfile block (8 new tests, 70 total pass).
+- Verified end-to-end: partial single-field update 200 (other fields preserved), multi-field update 200, subsequent single-field PATCH preserves earlier fields, missing/garbage/refresh-as-access tokens 401, empty body `{}` 400 `Nothing to update.`, invalid email 400, `userId` injection 400, user B's PATCH never touches user A's row (ownership), account without a profile row 404, `updatedAt` now populated in response + DB after PATCH, zero 500s.
+
+## Phase 9 — Delete profile (complete)
+
+DELETE /api/v1/profile
+- Protected by the global `JwtAuthGuard` (no `@Public()`); the profile is resolved from `@CurrentUser()` → `user.id`, never from the request. There is no route like `DELETE /api/v1/profile/:id` and no body/query/header identifier is accepted — a client can only ever delete its own profile (no IDOR).
+- `ProfilesController.deleteProfile` — thin; `@Delete()` on the `profile` route. `@ApiStandardResponse(HttpStatus.OK, SUCCESS_MESSAGES.DELETED('Profile'))`.
+- `ProfilesService.deleteProfile` — `findByUserId(user.id)` → 404 `NOT_FOUND('Profile')` if the account has no profile (DELETE never creates one) → `deleteByUserId(user.id)` → logs `profile_deleted` → returns `{ message: SUCCESS_MESSAGES.DELETED('Profile'), data: null }`. P2025 catch → 404 (race safety net, same as PATCH). The deleted row is never returned.
+- `ProfilesRepository.deleteByUserId` — `delete({ where: { user_id: BigInt(userId) } })`; `user_id` is `@unique`, so at most one row per account.
+- `DeleteProfileResponse` in `profiles/mappers/profile.mapper.ts` — `{ message, data: null }`, the same convention as auth logout; the interceptor wraps it into `{ success, message, data: null }`.
+- Deletion semantics are unchanged from the existing database design — verified all FKs referencing `profile` are `ON DELETE CASCADE` in the live DB (`certification`, `education`, `experience`, `job_application`, `profile_skill`, `project`, `resume`); `sec_user` is untouched. No schema change, no migration, no new cascade rules.
+- Unit tests: `profiles.service.spec.ts` deleteProfile block (6 new tests, 76 total pass).
+- Verified end-to-end: no token / garbage token 401, DELETE (with `userId`/`profileId` smuggled in body/query/header) 200 + DB row gone + education/project child rows cascaded + `sec_user` intact, repeat DELETE 404, ownership (user C's DELETE with user D's id in body deleted only C's own profile; D's profile untouched).
+
 ## Deferred / next steps
 
 - Refresh token rotation + persistence (stateless by design — no refresh-token table yet); server-side logout revocation; token revocation on logout.

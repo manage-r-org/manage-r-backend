@@ -7,6 +7,7 @@ export const ERROR_MESSAGES = {
   UNAUTHORIZED: 'Unauthorized. Please log in.',
   FORBIDDEN: 'You do not have permission to perform this action.',
   BAD_REQUEST: 'Bad request.',
+  NOTHING_TO_UPDATE: 'Nothing to update.',
 
   // Auth
   INVALID_CREDENTIALS: 'Invalid credentials.',

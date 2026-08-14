@@ -130,7 +130,7 @@ model profile {
   present_address   String?
   permanent_address String?
   created_at        DateTime?         @default(now()) @db.Timestamp(6)
-  updated_at        DateTime?         @db.Timestamp(6)
+  updated_at        DateTime?         @updatedAt @db.Timestamp(6)
   certification     certification[]
   education         education[]
   experience        experience[]
