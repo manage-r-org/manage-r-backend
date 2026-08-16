@@ -105,9 +105,50 @@ DELETE /api/v1/profile
 - Unit tests: `profiles.service.spec.ts` deleteProfile block (6 new tests, 76 total pass).
 - Verified end-to-end: no token / garbage token 401, DELETE (with `userId`/`profileId` smuggled in body/query/header) 200 + DB row gone + education/project child rows cascaded + `sec_user` intact, repeat DELETE 404, ownership (user C's DELETE with user D's id in body deleted only C's own profile; D's profile untouched).
 
+## Phase 10 — Education CRUD (complete)
+
+GET/POST /api/v1/profile/education, PATCH/DELETE /api/v1/profile/education/:educationId
+- Routes are nested under the profile resource (`@Controller('profile/education')`) — education hangs off a profile, which hangs off exactly one `sec_user`. This replaces the placeholder `@Controller('education')` and becomes the documented contract.
+- Protected by the global `JwtAuthGuard` (no `@Public()`); ownership comes from `@CurrentUser()` → verified access token, never from the body (DTOs have no `profileId`/`educationId`/`userId`; the ValidationPipe rejects them with 400 `property profileId should not exist`). A foreign `:educationId` matches nothing → 404 (no IDOR).
+- `ParseBigIntPipe` (new, `src/common/pipes/parse-bigint.pipe.ts`) validates `:educationId` on PATCH/DELETE — BIGINT ids exceed JS safe-integer range so the value stays a string; anything not matching `/^\d{1,19}$/` → 400 `"abc" is not a valid id.` (mirrors the existing `ParseUuidPipe`).
+- `CreateEducationDto` (`education/dto/create-education.dto.ts`) — all 8 education fields optional (schema allows null everywhere), class-validator rules matching DB column lengths (`@IsString`, `@MaxLength` for degree 200 / institution 255 / fieldOfStudy 255 / grade 50, `@IsDateString` for startDate/endDate, `@IsBoolean` for isCurrent, `@IsString` for description). `UpdateEducationDto extends PartialType(CreateEducationDto)` for PATCH semantics.
+- `EducationResponse` + `toEducationResponse` in `education/mappers/education.mapper.ts` — whitelist of the entry's own fields; `educationId`/`profileId` as strings (BIGINT); no sec_user internals. `DeleteEducationResponse` = `{ message, data: null }` (same convention as profile delete / auth logout).
+- `EducationRepository` (extends `BaseRepository<education>`) — every method scopes by `profile.user_id` (the profile's owner), so the DB itself enforces ownership even with a foreign id:
+  - `findProfileIdByUserId` — resolves the profile id from the JWT identity; `null` when the account has no profile.
+  - `findAllByUserId` — list, ordered `start_date desc, nulls last`, then `education_id desc`.
+  - `findOwnedById` — single owned row (used to re-fetch after an updateMany, which returns no row).
+  - `createEducation(profileId, dto)` — `profile_id` from the JWT identity only; start/end dates string→`Date` (Prisma rejects a bare `"2020-01-15"`).
+  - `updateOwnedEducation` / `deleteOwnedEducation` — `updateMany`/`deleteMany` scoped by `user_id` + `education_id`; return affected counts (never throw), service turns `0` into 404. No P2025 handling needed.
+- `EducationService` — thin flows: list (empty `[]` when no profile/entries); create (404 `Profile not found.` without a profile, P2003 FK race → same 404); update (empty body → 400 `Nothing to update.`, count 0 → 404 `Education not found.`); delete (count 0 → 404, success-only response). Logs `education_created`/`education_updated`/`education_deleted`. Logger added to `EducationService` (was absent for the placeholder).
+- `EducationController` — `@Get()` list, `@Post()` create, `@Patch(':educationId')`, `@Delete(':educationId')` with `ParseBigIntPipe`. All `@ApiStandardResponse`-documented.
+- Unit tests: `education.service.spec.ts` (22 new tests, 98 total pass).
+- Verified end-to-end: list-without-profile `[]`, create-without-profile 404, full-body create 201 (dates round-trip to `1995-01-01` style), list 200, partial PATCH 200 (other fields preserved), empty body 400, invalid `:educationId` 400, `profileId`/`userId` injection 400, no/garbage token 401, cross-user PATCH/DELETE 404 (IDOR-proof — target row untouched), ordering (start_date desc, nulls last), own DELETE 200 + repeat DELETE 404, zero 500s.
+
+## Phase 11 — Experience CRUD (complete)
+
+GET/POST /api/v1/profile/experience, GET/PATCH/DELETE /api/v1/profile/experience/:experienceId
+- Routes are nested under the profile resource (`@Controller('profile/experience')`) — experience hangs off a profile, which hangs off exactly one `sec_user`. This replaces the placeholder `@Controller('experience')` and becomes the documented contract. Same pattern as Education (Phase 10), extended with the GET-one flow.
+- Protected by the global `JwtAuthGuard` (no `@Public()`); ownership comes from `@CurrentUser()` → verified access token, never from the body (DTOs have no `profileId`/`experienceId`/`userId`; the ValidationPipe rejects them with 400 `property profileId should not exist`). A foreign `:experienceId` matches nothing → 404 (no IDOR, no existence leak — GET/PATCH/DELETE all return 404, never 403).
+- `ParseBigIntPipe` (already added in Phase 10, reused — no new pipe) validates `:experienceId` on GET/PATCH/DELETE — anything not matching `/^\d{1,19}$/` → 400 `"abc" is not a valid id.` (verified for `abc`, `12abc`, `1.5`, `-1`).
+- `CreateExperienceDto` (`experience/dto/create-experience.dto.ts`) — all 8 experience fields optional (schema allows null everywhere; `experience` has no `created_at`/`updated_at` columns), class-validator rules matching DB column lengths (`@IsString`, `@MaxLength` for companyName 255 / position 255 / employmentType 100 / location 255, `@IsDateString` for startDate/endDate, `@IsBoolean` for isCurrent, `@IsString` for description). `UpdateExperienceDto extends PartialType(CreateExperienceDto)` for PATCH semantics.
+- `ExperienceResponse` + `toExperienceResponse` in `experience/mappers/experience.mapper.ts` — whitelist of the entry's own fields; `experienceId`/`profileId` as strings (BIGINT); no sec_user internals; no timestamps (the table has none). `DeleteExperienceResponse` = `{ message, data: null }`.
+- `ExperienceRepository` (extends `BaseRepository<experience>`) — mirrors `EducationRepository`; every method scopes by `profile.user_id`:
+  - `findProfileIdByUserId` — resolves the profile id from the JWT identity; `null` when the account has no profile.
+  - `findAllByUserId` — list, ordered `start_date desc, nulls last`, then `experience_id desc`.
+  - `findOwnedById` — single owned row (GET-one flow + re-fetch after an updateMany).
+  - `createExperience(profileId, dto)` — `profile_id` from the JWT identity only; start/end dates string→`Date` (Prisma rejects a bare `"2019-05-01"`).
+  - `updateOwnedExperience` / `deleteOwnedExperience` — `updateMany`/`deleteMany` scoped by `user_id` + `experience_id`; return affected counts (never throw), service turns `0` into 404. No P2025 handling needed.
+- `ExperienceService` — thin flows: list (empty `[]` when no profile/entries); get one (ownership-scoped query → 404 `Experience not found.`); create (404 `Profile not found.` without a profile, P2003 FK race → same 404); update (empty body → 400 `Nothing to update.`, count 0 → 404); delete (count 0 → 404, success-only response). Logs `experience_created`/`experience_updated`/`experience_deleted`. Logger added to `ExperienceService` (was absent for the placeholder).
+- `ExperienceController` — `@Get()` list, `@Post()` create, `@Get(':experienceId')`, `@Patch(':experienceId')`, `@Delete(':experienceId')` with `ParseBigIntPipe`. All `@ApiStandardResponse`-documented.
+- **Responsibilities decision:** `experience_responsibility` is NOT exposed in this phase's contract — no create/update/read of responsibilities, no separate endpoints (they have their own composite PK `(experience_id, display_order)` and ordered-array semantics; a future phase handles them). Deleting an experience cascades its responsibility rows automatically at the database level (FK `ON DELETE CASCADE`, verified live), so no orphan handling is needed.
+- Unit tests: `experience.service.spec.ts` (29 new tests — includes a dedicated `security / cross-user isolation` block proving B cannot GET/PATCH/DELETE A's row and A's row stays unchanged; 127 total pass).
+- Verified end-to-end: full-body create 201 (dates round-trip), list 200, GET one 200, partial PATCH 200 (only supplied fields changed, DB-confirmed), empty body 400, malformed ids 400 (`abc`/`12abc`/`1.5`/`-1`), no/garbage token 401, `profileId`/`userId`/`experienceId` injection 400, oversized companyName 400, invalid date 400, no-profile create 404 + list `[]`, cross-user GET/PATCH/DELETE 404 (B's attempts never touched A's row), ordering (start_date desc, nulls last), own DELETE 200 + repeat DELETE 404, responsibility cascade on delete (DB-confirmed), zero 500s. (Note: a string like `"yes"` for `isCurrent` is coerced to `true` by the global ValidationPipe's `enableImplicitConversion` — identical to Education, pre-existing global behavior.)
+
 ## Deferred / next steps
 
 - Refresh token rotation + persistence (stateless by design — no refresh-token table yet); server-side logout revocation; token revocation on logout.
 - `login_log` audit table is defined in the schema but not yet written to.
 - Auth endpoints should eventually be covered by e2e tests alongside registration.
 - `rate limit` login attempts (brute-force protection).
+- `experience_responsibility` management (ordered responsibilities per experience, composite-key semantics) — deferred to its own phase.
+- Remaining placeholder CRUD modules (same phased, tested pattern as profile/education/experience): certification, project, resume, job-application, users, roles.
